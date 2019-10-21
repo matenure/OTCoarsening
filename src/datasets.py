@@ -50,8 +50,8 @@ def get_dataset(name, sparse=True, dirname=None):
         if name == 'REDDIT-BINARY':
             num_nodes = min(int(num_nodes / len(dataset) * 1.5), max_num_nodes)
         else:
-            num_nodes = min(int(num_nodes / len(dataset) * 5), max_num_nodes)
-            # num_nodes = max_num_nodes
+            # num_nodes = min(int(num_nodes / len(dataset) * 5), max_num_nodes)
+            num_nodes = max_num_nodes
 
         indices = []
         for i, data in enumerate(dataset):
