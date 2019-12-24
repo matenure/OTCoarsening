@@ -3,26 +3,28 @@ import time
 import argparse
 from datasets import get_dataset
 import torch.nn.functional as F
+# from train_eval import cross_validation_with_val_set
 import numpy as np
-from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.model_selection import cross_val_score, KFold
 from sklearn import linear_model
-from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPRegressor
+from sklearn.multioutput import MultiOutputRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 import warnings
 warnings.filterwarnings("ignore")
 
-from coarsening_opt2 import MultiLayerCoarsening
+from coarsening_opt2 import Coarsening, MultiLayerCoarsening
 import torch
 import os
 from torch_geometric.data import DataLoader, DenseDataLoader as DenseLoader
 from torch.optim import Adam
-from train_eval_opt import cross_validation_with_val_set_opt, getMiddleRes, MLP
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--batch_size', type=int, default=128)
-parser.add_argument('--lr', type=float, default=0.001)
+parser.add_argument('--batch_size', type=int, default=256)
+parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--lr_decay_factor', type=float, default=0.5)
 parser.add_argument('--lr_decay_step_size', type=int, default=50)
 
@@ -30,17 +32,18 @@ parser.add_argument('--opt_iters', type=int, default=10)
 parser.add_argument('--eps', type=float, default=1.0)
 parser.add_argument('--ratio', type=float, default=0.5)
 parser.add_argument('--train', action='store_true')
-parser.add_argument('--no_extra_mlp', action='store_true')
 
 
 args = parser.parse_args()
-
+torch.manual_seed(123)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(123)
 
 
 layers = [1,2]
 # hiddens = [16, 32, 64, 128]
 hiddens = [64]
-datasets = ['PROTEINS', 'MUTAG', 'NCI1', 'NCI109', 'IMDB-BINARY', 'IMDB-MULTI', 'DD']
+datasets = ['QM7b']
 nets = [MultiLayerCoarsening]
 # args.train = True
 
@@ -51,7 +54,6 @@ def train(model, optimizer, loader):
     for data in loader:
         optimizer.zero_grad()
         data = data.to(device)
-        # xs, new_adj, S, opt_loss = model(data, epsilon=0.01, opt_epochs=100)
         xs, new_adjs, Ss, opt_loss = model(data, epsilon=args.eps, opt_epochs=args.opt_iters)
         if opt_loss ==0.0:
             continue
@@ -74,7 +76,7 @@ def eval_loss(model, loader):
     return loss / len(loader.dataset), data.x, new_adjs, Ss
 
 
-def eval_acc(model, dataset):
+def eval_reg_loss(model, dataset):
     model.eval()
 
     loader = DenseLoader(dataset, batch_size=args.batch_size, shuffle=False)
@@ -88,20 +90,21 @@ def eval_acc(model, dataset):
             Xs.append(model.jump(xs))
             # Xs.append(xs[0])
     Xs = torch.cat(Xs, 0)
-    Ys = torch.cat(Ys, 0)
+    Ys = torch.cat(Ys, 0).squeeze()
 
+    cv = KFold(10, random_state=12345)
 
+    # clf1 = MultiOutputRegressor(GradientBoostingRegressor(random_state=0))
+    # # clf1 = MultiOutputRegressor(linear_model.Lasso())
+    #
+    # score1 = cross_val_score(clf1, X=Xs.detach().cpu().numpy(), y=Ys.detach().cpu().numpy(), cv=10, scoring='neg_mean_absolute_error')
 
-    clf1 = linear_model.LogisticRegressionCV(solver='saga', multi_class='auto',max_iter=200,random_state=12345)
-    cv = StratifiedKFold(10, random_state=12345)
-
-    score1 = cross_val_score(clf1, X=Xs.detach().cpu().numpy(), y=Ys.detach().cpu().numpy(), cv=cv)
-
-    clf2 = MLPClassifier(hidden_layer_sizes=(64,32), max_iter=400)
-    score2 = cross_val_score(clf2, X=Xs.detach().cpu().numpy(), y=Ys.detach().cpu().numpy(), cv=cv)
+    clf2 = MultiOutputRegressor(MLPRegressor(hidden_layer_sizes=(64,32), max_iter=400))
+    score2 = cross_val_score(clf2, X=Xs.detach().cpu().numpy(), y=Ys.detach().cpu().numpy(), cv=cv, scoring='neg_mean_absolute_error')
 
     # print(score.mean(), score.std())
-    return score1.mean(), score1.std(), score2.mean(), score2.std()
+    return -score2.mean(), score2.std()
+    # return -score1.mean(), score1.std(), -score2.mean(), score2.std()
 
 
 def num_graphs(data):
@@ -116,8 +119,12 @@ results = []
 for dataset_name, Net in product(datasets, nets):
     best_result = (float('inf'), 0, 0)  # (loss, acc, std)
     print('-----\n{} - {}'.format(dataset_name, Net.__name__))
+    dataset = get_dataset(dataset_name, sparse=False, dirname=None)
+    mean, std = dataset.data.y.mean(0), dataset.data.y.std(0)
+    dataset.data.y = (dataset.data.y - mean) / std
+
     for num_layers, hidden in product(layers, hiddens):
-        dataset = get_dataset(dataset_name, sparse=False, dirname=None)
+        t_start = time.perf_counter()
         model = Net(dataset, hidden, ratio=args.ratio)
 
         dirpath = "../savedmodels_eps"+str(args.eps)+"_iter"+str(args.opt_iters)
@@ -128,7 +135,7 @@ for dataset_name, Net in product(datasets, nets):
 
 
         if args.train:
-            #unsupervised training
+
             perm = torch.randperm(len(dataset))
             train_id = int(0.8*len(dataset))
             train_index = perm[:train_id]
@@ -167,14 +174,11 @@ for dataset_name, Net in product(datasets, nets):
         #load model and test
         if os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path, map_location=device))
-            if args.no_extra_mlp:
-                acc_mean1, acc_std1, acc_mean2, acc_std2 = eval_acc(model, dataset)
-                print("Final Results LR: ", acc_mean1, acc_std1)
-                print("Final Results MLP: ", acc_mean2, acc_std2)
-            else:
-                myData = getMiddleRes(dataset, model,args.batch_size, args.eps, args.opt_iters)
-                mlp = MLP(myData.X.size(-1), 64, myData.num_classes)
-                loss_mean, acc_mean, acc_std = cross_validation_with_val_set_opt(myData,mlp, 10, 200, 32, lr=0.01, weight_decay=0.0001)
+            acc_mean2, acc_std2 = eval_reg_loss(model, dataset)
+            # print("Final Results GB: ", acc_mean1, acc_std1)
+            print("Final Results MLP: ", acc_mean2, acc_std2)
+            t_end = time.perf_counter()
+            print("Duration: ", t_end-t_start)
         else:
             print(model_path)
 

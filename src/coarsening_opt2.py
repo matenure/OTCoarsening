@@ -70,7 +70,7 @@ class CoarsenBlock(torch.nn.Module):
             else:
                 cut_value[j] = 0
         # cut_alpha_vec = torch.mul( ((alpha_vec - torch.unsqueeze(cut_value, -1))>=0).float(), alpha_vec)  # b * n
-        cut_alpha_vec = F.relu(alpha_vec - torch.unsqueeze(cut_value, -1))
+        cut_alpha_vec = F.relu(alpha_vec+0.0000001 - torch.unsqueeze(cut_value, -1))
 
         S = torch.mul(norm_adj, cut_alpha_vec.unsqueeze(1))  # repeat rows of cut_alpha_vec, #b * n * n
         # temp_rowsum = torch.sum(S, -1).unsqueeze(-1).pow(-1)
@@ -165,6 +165,7 @@ class MultiLayerCoarsening(torch.nn.Module):
     def reset_parameters(self):
         self.embed_block1.reset_parameters()
         self.coarse_block1.reset_parameters()
+        self.embed_block2.reset_parameters()
 
         self.jump.reset_parameters()
         self.lin1.reset_parameters()
@@ -179,13 +180,13 @@ class MultiLayerCoarsening(torch.nn.Module):
 
         x1 = F.relu(self.embed_block1(x, adj, mask, add_loop=True))
         xs = [x1.mean(dim=1)]
-        coarse_x, new_adj, S = self.coarse_block1(x1, adj, batch_num_nodes)
-        new_adjs.append(new_adj)
-        Ss.append(S)
-        # x2 = F.relu(self.embed_block1(coarse_x, new_adj, mask, add_loop=True))
-        # xs.append(x2.mean(dim=1))
+        new_adj = adj
+        coarse_x = x1
+        # coarse_x, new_adj, S = self.coarse_block1(x1, adj, batch_num_nodes)
+        # new_adjs.append(new_adj)
+        # Ss.append(S)
 
-        for i in range(self.num_layers-1):
+        for i in range(self.num_layers):
             coarse_x, new_adj, S = self.coarse_block1(coarse_x, new_adj, batch_num_nodes)
             new_adjs.append(new_adj)
             Ss.append(S)

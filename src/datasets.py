@@ -1,7 +1,7 @@
 import os.path as osp
 
 import torch
-from torch_geometric.datasets import TUDataset
+from torch_geometric.datasets import TUDataset,QM9, QM7b
 from torch_geometric.utils import degree
 import torch_geometric.transforms as T
 
@@ -23,7 +23,12 @@ def get_dataset(name, sparse=True, dirname=None):
         path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', name)
     else:
         path = osp.join(dirname, name)
-    dataset = TUDataset(path, name)
+    if name=="QM9":
+        dataset = QM9(path)
+    elif name =="QM7b":
+        dataset = QM7b(path)
+    else:
+        dataset = TUDataset(path, name)
     dataset.data.edge_attr = None
 
     if dataset.data.x is None:
@@ -40,29 +45,29 @@ def get_dataset(name, sparse=True, dirname=None):
             mean, std = deg.mean().item(), deg.std().item()
             dataset.transform = NormalizedDegree(mean, std)
 
+
+    num_nodes = max_num_nodes = 0
+    for data in dataset:
+        num_nodes += data.num_nodes
+        max_num_nodes = max(data.num_nodes, max_num_nodes)
+
+    # Filter out a few really large graphs in order to apply DiffPool.
+    if name == 'REDDIT-BINARY':
+        num_nodes = min(int(num_nodes / len(dataset) * 1.5), max_num_nodes)
+    else:
+        num_nodes = min(int(num_nodes / len(dataset) * 5), max_num_nodes)
+        # num_nodes = max_num_nodes
+
+    indices = []
+    for i, data in enumerate(dataset):
+        if data.num_nodes <= num_nodes:
+            indices.append(i)
+    dataset = dataset[torch.tensor(indices)]
+
     if not sparse:
-        num_nodes = max_num_nodes = 0
-        for data in dataset:
-            num_nodes += data.num_nodes
-            max_num_nodes = max(data.num_nodes, max_num_nodes)
-
-        # Filter out a few really large graphs in order to apply DiffPool.
-        if name == 'REDDIT-BINARY':
-            num_nodes = min(int(num_nodes / len(dataset) * 1.5), max_num_nodes)
-        else:
-            # num_nodes = min(int(num_nodes / len(dataset) * 5), max_num_nodes)
-            num_nodes = max_num_nodes
-
-        indices = []
-        for i, data in enumerate(dataset):
-            if data.num_nodes <= num_nodes:
-                indices.append(i)
-        dataset = dataset[torch.tensor(indices)]
-
         if dataset.transform is None:
             dataset.transform = T.ToDense(num_nodes)
         else:
             dataset.transform = T.Compose(
                 [dataset.transform, T.ToDense(num_nodes)])
-
     return dataset

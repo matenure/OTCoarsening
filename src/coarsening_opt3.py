@@ -108,6 +108,7 @@ class MultiLayerCoarsening(torch.nn.Module):
     def reset_parameters(self):
         self.embed_block1.reset_parameters()
         self.coarse_block1.reset_parameters()
+        self.embed_block2.reset_parameters()
 
         self.jump.reset_parameters()
         self.lin1.reset_parameters()
